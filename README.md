@@ -220,6 +220,51 @@ print(decision)
 
 See `tradingagents/default_config.py` for all configuration options.
 
+## Visual Dashboard
+
+TradingAgents now includes a modern web-based Dashboard for controlling the agent pipeline and reading results — no terminal required.
+
+### Screenshots
+
+- **Home** — Agent Flow pipeline graph + Control Panel to select agents, set tickers, and trigger runs
+- **Live** — Real-time SSE progress stream while a run executes
+- **History** — Past runs list, click any run to view its full report
+- **Run Detail** — Rendered Markdown report + step-by-step progress log + summary stats
+
+### Run the Dashboard
+
+```bash
+git clone https://github.com/erix/TradingAgents.git
+cd TradingAgents/dashboard
+
+# Terminal 1 — Backend
+pip install -r backend/requirements.txt
+python backend/api_server.py
+
+# Terminal 2 — Frontend
+cd frontend
+npm install
+npm run dev
+```
+
+Open **http://localhost:5173** in your browser.
+
+### Dashboard Features
+
+- **Selective Agent Runs** — Toggle individual agents (Analyst, Screener, Strategist, Executor, Risk-Guard) instead of always running the full pipeline
+- **Ticker Input** — Enter tickers free-form with validation
+- **Strategy Selection** — Choose momentum vs value focus
+- **Live Progress** — Server-Sent Events streaming each agent's status in real time
+- **Report Viewer** — Markdown reports rendered with syntax highlighting and summary cards
+- **Run History** — Persistent list of all executions with timestamps and stats
+- **Dark Theme** — Tailored for trading desk use with amber/purple accents
+
+### Architecture
+
+- **Frontend:** React 18 + TypeScript + Vite, Lucide icons, custom CSS with CSS variables
+- **Backend:** Python FastAPI, async subprocess execution, SSE streaming, JSON persistence
+- **Communication:** REST API for state, Server-Sent Events for live progress
+
 ## Persistence and Recovery
 
 TradingAgents persists two kinds of state across runs.
