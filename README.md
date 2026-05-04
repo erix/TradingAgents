@@ -233,21 +233,33 @@ TradingAgents now includes a modern web-based Dashboard for controlling the agen
 
 ### Run the Dashboard
 
+> **Important:** The backend imports the main TradingAgents package, so you must run it from the project's Python environment (`.venv`), not your system Python.
+
 ```bash
 git clone https://github.com/erix/TradingAgents.git
-cd TradingAgents/dashboard
+cd TradingAgents
 
-# Terminal 1 — Backend
-pip install -r backend/requirements.txt
-python backend/api_server.py
+# Terminal 1 — Backend (use the project's .venv)
+.venv/bin/python dashboard/backend/api_server.py
 
 # Terminal 2 — Frontend
-cd frontend
+cd dashboard/frontend
 npm install
 npm run dev
 ```
 
+Or, if you haven't created the project's `.venv` yet:
+```bash
+cd TradingAgents
+python3 -m venv .venv
+.venv/bin/pip install .
+.venv/bin/pip install fastapi uvicorn[standard]
+.venv/bin/python dashboard/backend/api_server.py
+```
+
 Open **http://localhost:5173** in your browser.
+
+The backend runs on port `8000` by default (`--port` to override). The frontend dev proxy forwards `/api` to it automatically.
 
 ### Dashboard Features
 
