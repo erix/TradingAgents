@@ -17,6 +17,10 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+# ── Load .env before anything else ───────────────────────────────────────
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")  # project root .env
+
 # ── Ensure the parent project is importable ────────────────────────────────
 PROJECT_ROOT = Path(__file__).resolve().parents[2]  # dashboard/backend/../../trading-agents
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -140,16 +144,17 @@ def get_config():
     """Return available analysts, models, etc."""
     return {
         "analysts": ["market", "social", "news", "fundamentals"],
-        "llm_providers": ["openai", "anthropic", "google"],
+        "llm_providers": ["openai", "anthropic", "google", "openrouter"],
         "models": {
             "openai": ["gpt-5.4", "gpt-5.4-mini", "gpt-4o", "o3-mini"],
             "anthropic": ["claude-sonnet-4-6", "claude-haiku-4"],
             "google": ["gemini-2.0-flash", "gemini-2.0-pro"],
+            "openrouter": ["deepseek/deepseek-chat-v3", "openai/gpt-5.4-mini", "anthropic/claude-sonnet-4"],
         },
         "defaults": {
             "deep_think_llm": "gpt-5.4-mini",
             "quick_think_llm": "gpt-5.4-mini",
-            "llm_provider": "openai",
+            "llm_provider": "openrouter",
             "max_debate_rounds": 1,
         },
     }
@@ -185,6 +190,25 @@ def get_run(run_id: str):
 @app.post("/api/analyze", response_model=RunResponse)
 def start_analyze(payload: RunConfig, background_tasks: BackgroundTasks):
     """Start a new analysis run."""
+    # Validate API key availability before queuing
+    provider = payload.llm_provider
+    key_map = {
+        "openai": "OPENAI_API_KEY",
+        "anthropic": "ANTHROPIC_API_KEY",
+        "google": "GOOGLE_API_KEY",
+        "deepseek": "DEEPSEEK_API_KEY",
+        "qwen": "DASHSCOPE_API_KEY",
+        "glm": "ZHIPU_API_KEY",
+        "openrouter": "OPENROUTER_API_KEY",
+        "xai": "XAI_API_KEY",
+    }
+    env_key = key_map.get(provider)
+    if env_key and not os.getenv(env_key):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Missing API key for provider '{provider}'. Set {env_key} in your .env file."
+        )
+
     run_id = str(uuid.uuid4())[:8]
     run_record = {
         "run_id": run_id,

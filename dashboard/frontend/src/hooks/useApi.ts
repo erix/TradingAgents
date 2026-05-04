@@ -33,11 +33,21 @@ export async function getConfig() {
 }
 
 export async function startAnalysis(body: any) {
-  return fetchJson(`${API_BASE}/analyze`, {
+  const res = await fetch(`${API_BASE}/analyze`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+  if (!res.ok) {
+    const text = await res.text();
+    try {
+      const json = JSON.parse(text);
+      return { status: "error", message: json.detail || text };
+    } catch {
+      return { status: "error", message: text };
+    }
+  }
+  return res.json();
 }
 
 export function useRunStatus(runId: string, poll = false) {

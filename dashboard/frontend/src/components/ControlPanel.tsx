@@ -13,9 +13,9 @@ export default function ControlPanel({ onStarted }: { onStarted: (id: string) =>
   const [ticker, setTicker] = useState("SPY");
   const [tradeDate, setTradeDate] = useState(() => new Date().toISOString().split("T")[0]);
   const [selectedAnalysts, setSelectedAnalysts] = useState<string[]>(["market", "fundamentals", "news", "social"]);
-  const [provider, setProvider] = useState("openai");
-  const [deepModel, setDeepModel] = useState("gpt-5.4-mini");
-  const [quickModel, setQuickModel] = useState("gpt-5.4-mini");
+  const [provider, setProvider] = useState("openrouter");
+  const [deepModel, setDeepModel] = useState("openai/gpt-5.4-mini");
+  const [quickModel, setQuickModel] = useState("openai/gpt-5.4-mini");
   const [debateRounds, setDebateRounds] = useState(1);
   const [loading, setLoading] = useState(false);
   const [cfg, setCfg] = useState<any>(null);
@@ -44,6 +44,10 @@ export default function ControlPanel({ onStarted }: { onStarted: (id: string) =>
         max_debate_rounds: debateRounds,
         debug: false,
       });
+      if (res.status === "error") {
+        alert("Failed to start: " + (res.message || "Unknown error"));
+        return;
+      }
       onStarted(res.run_id);
     } catch (e: any) {
       alert("Failed to start: " + e.message);
