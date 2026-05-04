@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import httpx
 from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
@@ -46,8 +47,61 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ── Providers ───────────────────────────────────────────────────────────────
+
+# ── Fetch OpenRouter models (cached) ───────────────────────────────────────
+_openrouter_models: List[str] = []
+
+
+def _load_openrouter_models():
+    """Fetch current model list from OpenRouter API (no auth needed)."""
+    global _openrouter_models
+    try:
+        r = httpx.get("https://openrouter.ai/api/v1/models", timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        models = []
+        for m in data.get("data", []):
+            id_ = m.get("id", "")
+            name = m.get("name", "")
+            if id_ and not id_.startswith("nousresearch/") and "vision" not in name.lower():
+                models.append(id_)
+        _openrouter_models = sorted(models, key=lambda x: (x.split("/")[0], x))
+        print(f"[INFO] Fetched {len(_openrouter_models)} models from OpenRouter")
+    except Exception as exc:
+        import sys
+        print(f"[WARN] Could not fetch OpenRouter models: {exc}", file=sys.stderr)
+        _openrouter_models = [
+            "anthropic/claude-3.5-sonnet",
+            "anthropic/claude-3-opus",
+            "openai/gpt-4o",
+            "openai/gpt-4o-mini",
+            "openai/o1-mini",
+            "deepseek/deepseek-chat",
+            "google/gemini-1.5-pro",
+            "meta-llama/llama-3.1-405b-instruct",
+            "nvidia/llama-3.1-nemotron-70b-instruct",
+            "mistralai/mistral-large",
+        ]
+
+
 # In-memory run store (simple persistence; replace with Redis in prod)
 RUNS: Dict[str, Dict[str, Any]] = {}
+
+# ── Provider → API key env var mapping ─────────────────────────────────────
+PROVIDER_KEYS = {
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "google": "GOOGLE_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
+    "qwen": "DASHSCOPE_API_KEY",
+    "glm": "ZHIPU_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+    "xai": "XAI_API_KEY",
+}
+
+# Load OpenRouter models at module import time
+_load_openrouter_models()
 
 # ── Models ──────────────────────────────────────────────────────────────────
 
@@ -142,6 +196,8 @@ def health():
 @app.get("/api/config")
 def get_config():
     """Return available analysts, models, etc."""
+    # Refresh OpenRouter models every startup
+    _load_openrouter_models()
     return {
         "analysts": ["market", "social", "news", "fundamentals"],
         "llm_providers": ["openai", "anthropic", "google", "openrouter"],
@@ -149,22 +205,11 @@ def get_config():
             "openai": ["gpt-5.4", "gpt-5.4-mini", "gpt-4o", "o3-mini"],
             "anthropic": ["claude-sonnet-4-6", "claude-haiku-4"],
             "google": ["gemini-2.0-flash", "gemini-2.0-pro"],
-            "openrouter": [
-                "anthropic/claude-3.5-sonnet",
-                "anthropic/claude-3-opus",
-                "openai/gpt-4o",
-                "openai/gpt-4o-mini",
-                "openai/o1-mini",
-                "deepseek/deepseek-chat",
-                "google/gemini-1.5-pro",
-                "meta-llama/llama-3.1-405b-instruct",
-                "nvidia/llama-3.1-nemotron-70b-instruct",
-                "mistralai/mistral-large",
-            ],
+            "openrouter": _openrouter_models,
         },
         "defaults": {
-            "deep_think_llm": "gpt-5.4-mini",
-            "quick_think_llm": "gpt-5.4-mini",
+            "deep_think_llm": "anthropic/claude-3.5-sonnet",
+            "quick_think_llm": "openai/gpt-4o-mini",
             "llm_provider": "openrouter",
             "max_debate_rounds": 1,
         },
@@ -203,17 +248,7 @@ def start_analyze(payload: RunConfig, background_tasks: BackgroundTasks):
     """Start a new analysis run."""
     # Validate API key availability before queuing
     provider = payload.llm_provider
-    key_map = {
-        "openai": "OPENAI_API_KEY",
-        "anthropic": "ANTHROPIC_API_KEY",
-        "google": "GOOGLE_API_KEY",
-        "deepseek": "DEEPSEEK_API_KEY",
-        "qwen": "DASHSCOPE_API_KEY",
-        "glm": "ZHIPU_API_KEY",
-        "openrouter": "OPENROUTER_API_KEY",
-        "xai": "XAI_API_KEY",
-    }
-    env_key = key_map.get(provider)
+    env_key = PROVIDER_KEYS.get(provider)
     if env_key and not os.getenv(env_key):
         raise HTTPException(
             status_code=400,
