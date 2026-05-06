@@ -28,6 +28,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.default_config import DEFAULT_CONFIG
+from cli.stats_handler import StatsCallbackHandler
 
 # ── Frontend build dir ─────────────────────────────────────────────────────
 FRONTEND_BUILD = Path(__file__).resolve().parent.parent / "frontend" / "dist"
@@ -72,7 +73,7 @@ def _load_openrouter_models():
         import sys
         print(f"[WARN] Could not fetch OpenRouter models: {exc}", file=sys.stderr)
         _openrouter_models = [
-            "anthropic/claude-3.5-sonnet",
+            "anthropic/claude-sonnet-4.6",
             "anthropic/claude-3-opus",
             "openai/gpt-4o",
             "openai/gpt-4o-mini",
@@ -88,6 +89,19 @@ def _load_openrouter_models():
 # In-memory run store (simple persistence; replace with Redis in prod)
 RUNS: Dict[str, Dict[str, Any]] = {}
 
+ANALYST_ORDER = ["market", "social", "news", "fundamentals"]
+ANALYST_AGENT_NAMES = {
+    "market": "Market Analyst",
+    "social": "Social Analyst",
+    "news": "News Analyst",
+    "fundamentals": "Fundamentals Analyst",
+}
+ANALYST_REPORT_MAP = {
+    "market": "market_report",
+    "social": "sentiment_report",
+    "news": "news_report",
+    "fundamentals": "fundamentals_report",
+}
 # ── Provider → API key env var mapping ─────────────────────────────────────
 PROVIDER_KEYS = {
     "openai": "OPENAI_API_KEY",
@@ -182,6 +196,186 @@ def scan_historical_runs() -> List[Dict[str, Any]]:
             unique.append(r)
     return sorted(unique, key=lambda x: x["trade_date"], reverse=True)
 
+def utc_time() -> str:
+    return datetime.now().strftime("%H:%M:%S")
+
+def is_blank(value: Any) -> bool:
+    return value is None or (isinstance(value, str) and not value.strip())
+
+def extract_content_string(content: Any) -> Optional[str]:
+    if is_blank(content):
+        return None
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, dict):
+        text = content.get("text")
+        return text.strip() if isinstance(text, str) and text.strip() else None
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item.strip())
+            elif isinstance(item, dict) and item.get("type") == "text":
+                parts.append(str(item.get("text", "")).strip())
+        text = " ".join(part for part in parts if part)
+        return text or None
+    return str(content).strip() or None
+
+def classify_message(message: Any) -> tuple[str, Optional[str]]:
+    class_name = message.__class__.__name__
+    content = extract_content_string(getattr(message, "content", None))
+    if class_name == "HumanMessage":
+        return ("Control" if content == "Continue" else "User", content)
+    if class_name == "ToolMessage":
+        return ("Data", content)
+    if class_name == "AIMessage":
+        return ("Agent", content)
+    return ("System", content)
+
+def append_event(run: Dict[str, Any], event_type: str, content: str, agent: Optional[str] = None):
+    if not content.strip():
+        return
+    events = run.setdefault("events", [])
+    events.append({
+        "time": utc_time(),
+        "type": event_type,
+        "agent": agent,
+        "content": content,
+    })
+    del events[:-200]
+
+def initialize_agent_status(selected_analysts: List[str]) -> Dict[str, str]:
+    status = {}
+    for analyst in ANALYST_ORDER:
+        if analyst in selected_analysts:
+            status[ANALYST_AGENT_NAMES[analyst]] = "pending"
+    status.update({
+        "Bull Researcher": "pending",
+        "Bear Researcher": "pending",
+        "Research Manager": "pending",
+        "Trader": "pending",
+        "Aggressive Analyst": "pending",
+        "Neutral Analyst": "pending",
+        "Conservative Analyst": "pending",
+        "Portfolio Manager": "pending",
+    })
+    return status
+
+def set_agent_status(run: Dict[str, Any], agent: str, status: str):
+    if agent in run.get("agent_status", {}):
+        run["agent_status"][agent] = status
+
+def update_progress(run: Dict[str, Any], step: str):
+    statuses = run.get("agent_status", {})
+    completed = sum(1 for status in statuses.values() if status == "completed")
+    running = [agent for agent, status in statuses.items() if status in ("running", "in_progress")]
+    total = len(statuses)
+    run["progress"] = {
+        "step": step,
+        "active_agent": running[0] if running else None,
+        "completed_agents": completed,
+        "total_agents": total,
+        "reports_completed": sum(1 for key in ("market_report", "sentiment_report", "news_report", "fundamentals_report", "investment_plan", "trader_investment_plan", "final_trade_decision") if run.get(key)),
+    }
+
+def update_analyst_statuses(run: Dict[str, Any], chunk: Dict[str, Any], selected_analysts: List[str]):
+    found_active = False
+    for analyst_key in ANALYST_ORDER:
+        if analyst_key not in selected_analysts:
+            continue
+
+        agent_name = ANALYST_AGENT_NAMES[analyst_key]
+        report_key = ANALYST_REPORT_MAP[analyst_key]
+        if chunk.get(report_key):
+            run[report_key] = chunk[report_key]
+            run.setdefault("report_sections", {})[report_key] = chunk[report_key]
+
+        if run.get(report_key):
+            set_agent_status(run, agent_name, "completed")
+        elif not found_active:
+            set_agent_status(run, agent_name, "running")
+            found_active = True
+        else:
+            set_agent_status(run, agent_name, "pending")
+
+    if not found_active and selected_analysts:
+        set_agent_status(run, "Bull Researcher", "running")
+
+def update_research_statuses(run: Dict[str, Any], debate_state: Dict[str, Any]):
+    bull = str(debate_state.get("bull_history", "") or "").strip()
+    bear = str(debate_state.get("bear_history", "") or "").strip()
+    judge = str(debate_state.get("judge_decision", "") or "").strip()
+    if bull or bear:
+        set_agent_status(run, "Bull Researcher", "running")
+        set_agent_status(run, "Bear Researcher", "running")
+        set_agent_status(run, "Research Manager", "running")
+    if bull:
+        set_agent_status(run, "Bull Researcher", "completed")
+    if bear:
+        set_agent_status(run, "Bear Researcher", "completed")
+    if judge:
+        set_agent_status(run, "Research Manager", "completed")
+        set_agent_status(run, "Trader", "running")
+        run["investment_plan"] = judge
+        run.setdefault("report_sections", {})["investment_plan"] = judge
+
+def update_risk_statuses(run: Dict[str, Any], risk_state: Dict[str, Any]):
+    mapping = [
+        ("aggressive_history", "Aggressive Analyst"),
+        ("neutral_history", "Neutral Analyst"),
+        ("conservative_history", "Conservative Analyst"),
+    ]
+    for key, agent in mapping:
+        if str(risk_state.get(key, "") or "").strip():
+            set_agent_status(run, agent, "completed")
+        elif run.get("trader_investment_plan") or run.get("trader_investment_decision"):
+            set_agent_status(run, agent, "running")
+    if str(risk_state.get("judge_decision", "") or "").strip():
+        set_agent_status(run, "Portfolio Manager", "completed")
+        run["final_trade_decision"] = risk_state["judge_decision"]
+        run.setdefault("report_sections", {})["final_trade_decision"] = risk_state["judge_decision"]
+
+def process_stream_chunk(run: Dict[str, Any], chunk: Dict[str, Any], selected_analysts: List[str], processed_ids: set[str]):
+    for message in chunk.get("messages", []):
+        msg_id = getattr(message, "id", None)
+        if msg_id is not None:
+            if msg_id in processed_ids:
+                continue
+            processed_ids.add(msg_id)
+
+        msg_type, content = classify_message(message)
+        if content:
+            append_event(run, msg_type, content)
+
+        for tool_call in getattr(message, "tool_calls", []) or []:
+            if isinstance(tool_call, dict):
+                name = tool_call.get("name", "tool")
+                args = tool_call.get("args", {})
+            else:
+                name = getattr(tool_call, "name", "tool")
+                args = getattr(tool_call, "args", {})
+            append_event(run, "Tool Call", f"{name}({args})")
+
+    update_analyst_statuses(run, chunk, selected_analysts)
+
+    if chunk.get("investment_debate_state"):
+        run["investment_debate_state"] = chunk["investment_debate_state"]
+        update_research_statuses(run, chunk["investment_debate_state"])
+
+    if chunk.get("trader_investment_plan"):
+        run["trader_investment_plan"] = chunk["trader_investment_plan"]
+        run["trader_investment_decision"] = chunk["trader_investment_plan"]
+        run.setdefault("report_sections", {})["trader_investment_plan"] = chunk["trader_investment_plan"]
+        set_agent_status(run, "Trader", "completed")
+        set_agent_status(run, "Aggressive Analyst", "running")
+
+    if chunk.get("risk_debate_state"):
+        run["risk_debate_state"] = chunk["risk_debate_state"]
+        update_risk_statuses(run, chunk["risk_debate_state"])
+
+    step = run["progress"].get("active_agent") or "streaming"
+    update_progress(run, step)
+
 # ── Mount static files ──────────────────────────────────────────────────────
 
 if FRONTEND_BUILD.exists():
@@ -208,7 +402,7 @@ def get_config():
             "openrouter": _openrouter_models,
         },
         "defaults": {
-            "deep_think_llm": "anthropic/claude-3.5-sonnet",
+            "deep_think_llm": "anthropic/claude-sonnet-4.6",
             "quick_think_llm": "openai/gpt-4o-mini",
             "llm_provider": "openrouter",
             "max_debate_rounds": 1,
@@ -218,11 +412,27 @@ def get_config():
 @app.get("/api/runs")
 def list_runs():
     """List all historical runs."""
-    return scan_historical_runs()
+    live_runs = [
+        {
+            "run_id": run["run_id"],
+            "ticker": run["ticker"],
+            "trade_date": run["trade_date"],
+            "status": run.get("status"),
+            "created_at": run.get("created_at"),
+            "source": "memory",
+        }
+        for run in RUNS.values()
+    ]
+    historical = scan_historical_runs()
+    seen = {run["run_id"] for run in live_runs}
+    return live_runs + [run for run in historical if run["run_id"] not in seen]
 
 @app.get("/api/runs/{run_id}")
 def get_run(run_id: str):
     """Get detailed report for a specific run."""
+    if run_id in RUNS:
+        return RUNS[run_id]
+
     # Try JSON log first
     for r in scan_historical_runs():
         if r["run_id"] == run_id and r.get("source") == "json_log":
@@ -263,9 +473,20 @@ def start_analyze(payload: RunConfig, background_tasks: BackgroundTasks):
         "status": "queued",
         "created_at": datetime.now().isoformat(),
         "config": payload.model_dump(),
-        "progress": {},
+        "progress": {
+            "step": "queued",
+            "active_agent": None,
+            "completed_agents": 0,
+            "total_agents": 0,
+            "reports_completed": 0,
+        },
         "messages": [],
+        "events": [],
+        "report_sections": {},
+        "agent_status": initialize_agent_status(payload.selected_analysts),
+        "stats": {"llm_calls": 0, "tool_calls": 0, "tokens_in": 0, "tokens_out": 0},
     }
+    update_progress(run_record, "queued")
     RUNS[run_id] = run_record
     background_tasks.add_task(execute_run, run_id, payload)
     return RunResponse(
@@ -289,16 +510,16 @@ async def stream_status(run_id: str):
         raise HTTPException(status_code=404, detail="Run not found")
 
     async def event_generator():
-        last_state = None
+        last_state = ""
         while True:
             state = RUNS.get(run_id)
             if state is None:
                 break
-            if state != last_state:
-                yield f"data: {json.dumps(state)}\n\n"
-                last_state = state.copy()
+            serialized = json.dumps(state, default=str)
+            if serialized != last_state:
+                yield f"data: {serialized}\n\n"
+                last_state = serialized
             if state.get("status") in ("completed", "failed"):
-                yield f"data: {json.dumps({'status': 'done'})}\n\n"
                 break
             await asyncio.sleep(0.5)
 
@@ -314,6 +535,9 @@ def execute_run(run_id: str, payload: RunConfig):
     """Background worker that executes the TradingAgents graph."""
     run = RUNS[run_id]
     run["status"] = "running"
+    first_analyst = payload.selected_analysts[0] if payload.selected_analysts else "market"
+    set_agent_status(run, ANALYST_AGENT_NAMES.get(first_analyst, "Market Analyst"), "running")
+    update_progress(run, "initializing")
 
     try:
         cfg = DEFAULT_CONFIG.copy()
@@ -322,32 +546,87 @@ def execute_run(run_id: str, payload: RunConfig):
             "deep_think_llm": payload.deep_think_llm,
             "quick_think_llm": payload.quick_think_llm,
             "max_debate_rounds": payload.max_debate_rounds,
+            "max_risk_discuss_rounds": payload.max_debate_rounds,
         })
 
+        stats_handler = StatsCallbackHandler()
         ta = TradingAgentsGraph(
             selected_analysts=payload.selected_analysts,
             debug=payload.debug,
             config=cfg,
+            callbacks=[stats_handler],
         )
 
-        run["progress"]["step"] = "initializing"
         run["messages"].append("TradingAgents graph initialized")
+        append_event(run, "System", "TradingAgents graph initialized")
+        update_progress(run, "initializing graph")
 
-        final_state, signal = ta.propagate(payload.ticker.upper(), payload.trade_date)
+        ticker = payload.ticker.upper()
+        ta.ticker = ticker
+        ta._resolve_pending_entries(ticker)
+        past_context = ta.memory_log.get_past_context(ticker)
+        init_agent_state = ta.propagator.create_initial_state(
+            ticker,
+            payload.trade_date,
+            past_context=past_context,
+        )
+        args = ta.propagator.get_graph_args(callbacks=[stats_handler])
+
+        trace = []
+        processed_ids: set[str] = set()
+        for chunk in ta.graph.stream(init_agent_state, **args):
+            trace.append(chunk)
+            process_stream_chunk(run, chunk, payload.selected_analysts, processed_ids)
+            run["stats"] = stats_handler.get_stats()
+
+        if not trace:
+            raise RuntimeError("TradingAgents graph finished without producing a final state.")
+
+        final_state = trace[-1]
+        ta.curr_state = final_state
+        ta._log_state(payload.trade_date, final_state)
+        ta.memory_log.store_decision(
+            ticker=ticker,
+            trade_date=payload.trade_date,
+            final_trade_decision=final_state["final_trade_decision"],
+        )
+        signal = ta.process_signal(final_state["final_trade_decision"])
 
         run["status"] = "completed"
-        run["progress"]["step"] = "done"
+        run.update({
+            "market_report": final_state.get("market_report", ""),
+            "sentiment_report": final_state.get("sentiment_report", ""),
+            "news_report": final_state.get("news_report", ""),
+            "fundamentals_report": final_state.get("fundamentals_report", ""),
+            "investment_debate_state": final_state.get("investment_debate_state", {}),
+            "investment_plan": final_state.get("investment_plan", ""),
+            "trader_investment_decision": final_state.get("trader_investment_decision", ""),
+            "trader_investment_plan": final_state.get("trader_investment_plan", ""),
+            "risk_debate_state": final_state.get("risk_debate_state", {}),
+            "final_trade_decision": final_state.get("final_trade_decision", ""),
+        })
         run["result"] = {
             "signal": signal,
             "final_trade_decision": final_state.get("final_trade_decision", ""),
             "investment_plan": final_state.get("investment_plan", ""),
         }
-        run["messages"].append(f"Run complete — Signal: {signal}")
+        for agent in run.get("agent_status", {}):
+            set_agent_status(run, agent, "completed")
+        run["stats"] = stats_handler.get_stats()
+        update_progress(run, "done")
+        complete_msg = f"Run complete - Signal: {signal}"
+        run["messages"].append(complete_msg)
+        append_event(run, "System", complete_msg)
 
     except Exception as e:
         run["status"] = "failed"
         run["error"] = str(e)
+        for agent, status in list(run.get("agent_status", {}).items()):
+            if status in ("running", "in_progress"):
+                set_agent_status(run, agent, "failed")
+        update_progress(run, "failed")
         run["messages"].append(f"Error: {e}")
+        append_event(run, "Error", str(e))
 
 # Catch-all for SPA
 @app.get("/{full_path:path}")
