@@ -5,22 +5,25 @@ import Home from "./pages/Home";
 import HistoryPage from "./pages/History";
 import RunDetail from "./pages/RunDetail";
 import Live from "./pages/Live";
+import { ActiveRunProvider } from "./hooks/useActiveRun";
 
 export default function App() {
   return (
-    <div className="app-shell">
-      <Sidebar />
-      <div className="main">
-        <Header />
-        <main className="content">
-          <Routes>
-            <Route path="/" element={<Home />} />
-            <Route path="/history" element={<HistoryPage />} />
-            <Route path="/live" element={<Live />} />
-            <Route path="/run/:runId" element={<RunDetail />} />
-          </Routes>
-        </main>
+    <ActiveRunProvider>
+      <div className="app-shell">
+        <Sidebar />
+        <div className="main">
+          <Header />
+          <main className="content">
+            <Routes>
+              <Route path="/" element={<Home />} />
+              <Route path="/history" element={<HistoryPage />} />
+              <Route path="/live" element={<Live />} />
+              <Route path="/run/:runId" element={<RunDetail />} />
+            </Routes>
+          </main>
+        </div>
       </div>
-    </div>
+    </ActiveRunProvider>
   );
 }

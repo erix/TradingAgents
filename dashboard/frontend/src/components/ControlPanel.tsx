@@ -14,7 +14,7 @@ export default function ControlPanel({ onStarted }: { onStarted: (id: string) =>
   const [tradeDate, setTradeDate] = useState(() => new Date().toISOString().split("T")[0]);
   const [selectedAnalysts, setSelectedAnalysts] = useState<string[]>(["market", "fundamentals", "news", "social"]);
   const [provider, setProvider] = useState("openrouter");
-  const [deepModel, setDeepModel] = useState("anthropic/claude-3.5-sonnet");
+  const [deepModel, setDeepModel] = useState("anthropic/claude-sonnet-4.6");
   const [quickModel, setQuickModel] = useState("openai/gpt-4o-mini");
   const [debateRounds, setDebateRounds] = useState(1);
   const [loading, setLoading] = useState(false);

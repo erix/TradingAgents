@@ -19,7 +19,8 @@ export default function AgentFlow({ statusMap }: { statusMap: Record<string, str
               return (
                 <div key={a} className={`agent-box ${s}`}>
                   <span className="agent-dot" />
-                  {a}
+                  <span>{a}</span>
+                  {s === "running" && <span className="agent-running-label">Running</span>}
                 </div>
               );
             })}
